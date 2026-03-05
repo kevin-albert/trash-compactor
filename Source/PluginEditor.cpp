@@ -66,14 +66,26 @@ PluginEditor::PluginEditor(PluginProcessor& processor)
     outputLabel.setJustificationType(juce::Justification::centred);
     addAndMakeVisible(outputLabel);
 
+    recycleSlider.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
+    recycleSlider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 60, 20);
+    addAndMakeVisible(recycleSlider);
+    recycleLabel.setText("Recycle", juce::dontSendNotification);
+    recycleLabel.setJustificationType(juce::Justification::centred);
+    addAndMakeVisible(recycleLabel);
+    recycleAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
+        processorRef.getParameters(), "recycle", recycleSlider);
 
     addAndMakeVisible(waveformDisplay);
 
-    setSize(600, 360);
+    addAndMakeVisible(debugLabel);
+    startTimerHz(30);
+
+    setSize(580, 320);
 }
 
 PluginEditor::~PluginEditor()
 {
+    stopTimer();
     numDistortionSlider.removeListener(this);
 }
 
@@ -85,6 +97,9 @@ void PluginEditor::paint(juce::Graphics& g)
 void PluginEditor::resized()
 {
     auto bounds = getLocalBounds().reduced(10);
+
+    // auto debugArea = bounds.removeFromBottom(20);
+    // debugLabel.setBounds(debugArea);
 
     auto waveformArea = bounds.removeFromTop(100);
     waveformDisplay.setBounds(waveformArea);
@@ -105,6 +120,10 @@ void PluginEditor::resized()
     ringLabel.setBounds(modPanel.removeFromTop(30));
     ringSlider.setBounds(modPanel);
 
+    auto recyclePanel = bounds.removeFromLeft(80);
+    recycleLabel.setBounds(recyclePanel.removeFromTop(30));
+    recycleSlider.setBounds(recyclePanel);
+
     auto colorPanel = bounds.removeFromLeft(80);
     colorLabel.setBounds(colorPanel.removeFromTop(30));
     colorSlider.setBounds(colorPanel);
@@ -118,6 +137,11 @@ void PluginEditor::sliderValueChanged(juce::Slider* slider)
 {
     if (slider == &numDistortionSlider)
         updateGain2Visibility();
+}
+
+void PluginEditor::timerCallback()
+{
+    // debugLabel.setText("downsampling: " + juce::String(processorRef.getDownsampling()), juce::dontSendNotification);
 }
 
 void PluginEditor::updateGain2Visibility()

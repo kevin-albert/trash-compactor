@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include <cmath>
 
 namespace
 {
@@ -36,14 +37,21 @@ namespace
         params.push_back(std::make_unique<juce::AudioParameterFloat>(
             juce::ParameterID{"smell", 1},
             "Smell",
-            juce::NormalisableRange<float>(-1.0f, 1.0f, 0.01f),
+            juce::NormalisableRange<float>(-1.0f + 1e-7f, 1.0f, 0.01f),
             0.0f
         ));
 
         params.push_back(std::make_unique<juce::AudioParameterFloat>(
             juce::ParameterID{"output", 1},
             "Output",
-            juce::NormalisableRange<float>(-20.0f, 20.0f, 0.01f),
+            juce::NormalisableRange<float>(-20.0f + 1e-6f, 20.0f, 0.01f),
+            0.0f
+        ));
+
+        params.push_back(std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID{"recycle", 1},
+            "Recycle",
+            juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f),
             0.0f
         ));
 
@@ -62,7 +70,8 @@ PluginProcessor::PluginProcessor()
     output = parameters.getRawParameterValue("output");
     ring = parameters.getRawParameterValue("garbage");
     gainStages = parameters.getRawParameterValue("gainStages");
-    color = parameters.getRawParameterValue("smell");
+    smell = parameters.getRawParameterValue("smell");
+    recycle = parameters.getRawParameterValue("recycle");
     waveformBuffer.resize(waveformBufferSize, 0.0f);
 }
 
@@ -105,12 +114,14 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiB
     constexpr float blend1Value = 0.7f;
     constexpr float tanhOffsetValue = 0.3f;
     constexpr float tanhScaleValue = 1.3f;
-    const float tanhOffset = alphaValue * tanhOffsetValue;
+    constexpr float tanhOffset = alphaValue * tanhOffsetValue;
+    const float tanhSubtract = std::tanh(tanhOffset);
     const float outputDb = output->load();
     const float outputLinear = std::pow(10.0f, outputDb / 20.0f);
     constexpr float blend2Value = 0.5f;
     const int numGainStages = static_cast<int>(gainStages->load());
     const bool hasDistortion = numGainStages > 0;
+    const float recycleValue = recycle->load();
 
 
     // step 1: apply gain
@@ -142,7 +153,7 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiB
             float highBand = x - lowBand;
 
             auto processNonlinear = [&](float in) {
-                float y = tanhScaleValue * std::tanh(in + tanhOffset) - 0.206966f;
+                float y = tanhScaleValue * (std::tanh(in + tanhOffset) - tanhSubtract);
 
                 float y_ = y;
                 for (int i = 0; i < 2; ++i) {
@@ -155,7 +166,6 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiB
                 }
                 
                 return y * (1.0f - blend1Value) + y_ * blend1Value;
-                
             };
 
             float processedLow = processNonlinear(lowBand);
@@ -164,6 +174,7 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiB
             channelData[sample] = processedLow + processedHigh;
         }
     }
+
 
     // step 4: apply stereo compression and ring mod
     constexpr float attackMs = 47.0f;
@@ -209,9 +220,38 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiB
             float x = channelData[sample];
 
             // apply ring mod based on compressor envelope
-            float ring = x * modulator;
+            float ringMod = x * modulator;
             float ringModBlend = (1-gainReduction) * ringModValue;
-            x = x * (1.0f - ringModBlend) + ring * ringModBlend;
+            x = x * (1.0f - ringModBlend) + ringMod * ringModBlend;
+
+            // apply bitcrusher & downsampling
+            if (recycleValue > 0.01) {
+                // bitcrusher
+                float bitCrushAmount = 2.0f - 2.0f * gainReduction;
+                if (bitCrushAmount > 1.0f) {
+                    bitCrushAmount = 1.0f;
+                }
+                bitCrushAmount *= recycleValue;
+
+                int precision = (int) (1.0f + std::pow(2.0f, 5.0f * (1.0f-bitCrushAmount)));
+                int q = (int)(x * precision);
+                x = ((float) q)/precision;
+
+                // downsampling
+                const float downsampleMax = 22.0f + 30.0f * recycleValue;
+                float downsampleAmount = 3.0f - 3.0f * gainReduction;
+                if (downsampleAmount > 1.0f) {
+                    downsampleAmount = 1.0f;
+                }
+
+                int downsampling = (int) (downsampleAmount * downsampleMax);
+                if (sample == 0) {
+                    downsample_debug = downsampling;
+                }
+                int prevSample = sample - (sample % downsampling);
+                float downsampleMix = std::min(2.0f * bitCrushAmount, 1.0f);
+                x = x * (1.0f - downsampleMix) + channelData[prevSample] * downsampleMix;
+            }
 
             // apply compression
             x = x * (1.0f - blend2Value) + (x * gainReduction) * blend2Value;
@@ -220,12 +260,21 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiB
     }
 
     // step 5: parametric EQ
-    const float colorValue = color->load();
+    const float smellValue = smell->load();
 
     // tune eq according to gain2
-    const float eqGainDb = 24 * std::tanh(4.0f * colorValue * colorValue);
-    const float eqFreqHz = 40 + (1.0f + colorValue) * 1000;
-    const float eqQValue = 0.4 + 0.5 * colorValue * colorValue;
+    float eqGainDb;
+    float eqFreqHz;
+    float eqQValue;
+    if (smellValue <= 0) {
+        eqGainDb = 24 * std::tanh(4.0f * smellValue * smellValue);
+        eqFreqHz = 40 + (1.0f + smellValue) * 1000;
+        eqQValue = 0.71;
+    } else {
+        eqGainDb = 24 * std::tanh(std::pow(10.0f * smellValue, 2.0f));
+        eqFreqHz = 600 + smellValue * smellValue * 5000;
+        eqQValue = 0.71 * std::cos(smellValue);
+    }
     
     const float A = std::pow(10.0f, eqGainDb / 40.0f);
     const float w0 = 2.0f * juce::MathConstants<float>::pi * eqFreqHz / static_cast<float>(currentSampleRate);
@@ -261,15 +310,12 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiB
             channelData[sample] = y;
         }
     }
-    
-
 
     // step 6: apply gain2
     const float gain2Db = gain2->load();
     const float gain2Linear = std::pow(10.0f, gain2Db / 20.0f);
 
     // step 7: apply distortion
-    
     for (int channel = 0; channel < buffer.getNumChannels(); ++channel) {
         float* channelData = buffer.getWritePointer(channel);
         for (int sample = 0; sample < buffer.getNumSamples(); ++sample) {
@@ -294,6 +340,7 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiB
                         x = 1;
                     x = x - 3.0f * std::pow(x - 0.55f, 4);
                 }
+                x *= 1.15; 
                 x *= -1;
             }
             channelData[sample] = x;
@@ -360,4 +407,8 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
     return new PluginProcessor();
+}
+
+int PluginProcessor::getDownsampling() {
+    return downsample_debug;
 }

@@ -34,14 +34,18 @@ public:
 
     void copyWaveformData(std::vector<float>& dest) const;
 
+    int getDownsampling();
+
 private:
     juce::AudioProcessorValueTreeState parameters;
     std::atomic<float>* gain1 = nullptr;
     std::atomic<float>* ring = nullptr;
     std::atomic<float>* gainStages = nullptr;
     std::atomic<float>* gain2 = nullptr;
-    std::atomic<float>* color = nullptr;
+    std::atomic<float>* smell = nullptr;
     std::atomic<float>* output = nullptr;
+    std::atomic<float>* recycle = nullptr;
+    int downsample_debug = 0;
 
     static constexpr int waveformBufferSize = 512;
     std::vector<float> waveformBuffer;

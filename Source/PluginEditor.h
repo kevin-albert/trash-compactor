@@ -41,7 +41,8 @@ private:
 };
 
 class PluginEditor : public juce::AudioProcessorEditor,
-                     private juce::Slider::Listener
+                     private juce::Slider::Listener,
+                     private juce::Timer
 {
 public:
     explicit PluginEditor(PluginProcessor& processor);
@@ -52,6 +53,7 @@ public:
 
 private:
     void sliderValueChanged(juce::Slider* slider) override;
+    void timerCallback() override;
     void updateGain2Visibility();
 
     PluginProcessor& processorRef;
@@ -73,8 +75,13 @@ private:
 
     juce::Slider outputSlider;
     juce::Label outputLabel;
+
+    juce::Slider recycleSlider;
+    juce::Label recycleLabel;
     
     WaveformDisplay waveformDisplay;
+
+    juce::Label debugLabel;
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> gain1Attachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> modAttachment;
@@ -82,6 +89,7 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> gain2Attachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> colorAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> outputAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> recycleAttachment;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginEditor)
 };
