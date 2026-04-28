@@ -1,8 +1,15 @@
 cmake_minimum_required(VERSION 3.22)
-project(TrashCompactor VERSION 1.0.0)
+project(TrashCompactor VERSION 1.0.1)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Statically link the MSVC C++ runtime on Windows so the resulting VST3 does
+# not depend on the Visual C++ Redistributable being installed on end-user
+# machines. Must be set before any targets are created.
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 include(FetchContent)
 
@@ -41,6 +48,16 @@ target_compile_definitions(TrashCompactor
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
 )
+
+# Pin the Windows API version to Windows 10 so newer APIs don't accidentally
+# get pulled in, which would prevent the plugin from loading on older Win10
+# builds.
+if(WIN32)
+    target_compile_definitions(TrashCompactor PRIVATE
+        _WIN32_WINNT=0x0A00
+        WINVER=0x0A00
+    )
+endif()
 
 target_link_libraries(TrashCompactor
     PRIVATE
